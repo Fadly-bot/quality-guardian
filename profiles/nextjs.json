@@ -1,0 +1,9 @@
+{
+  "name": "Next.js",
+  "version": "1.0",
+  "detect": ["next.config.js", "next.config.mjs", "next.config.ts", "package.json"],
+  "package_managers": ["npm", "pnpm", "yarn"],
+  "required_scanners": ["semgrep", "gitleaks", "trivy", "osv"],
+  "optional_scanners": ["npm audit"],
+  "quality_commands": ["npm test", "npm run lint", "npm run build", "npm run typecheck"]
+}

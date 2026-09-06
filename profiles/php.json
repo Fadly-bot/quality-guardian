@@ -1,0 +1,9 @@
+{
+  "name": "PHP",
+  "version": "1.0",
+  "detect": ["composer.json"],
+  "package_managers": ["composer"],
+  "required_scanners": ["semgrep", "gitleaks", "trivy", "osv"],
+  "optional_scanners": [],
+  "quality_commands": []
+}

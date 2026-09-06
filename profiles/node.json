@@ -1,0 +1,9 @@
+{
+  "name": "Node.js",
+  "version": "1.0",
+  "detect": ["package.json"],
+  "package_managers": ["npm", "pnpm", "yarn"],
+  "required_scanners": ["semgrep", "gitleaks", "trivy", "osv"],
+  "optional_scanners": ["npm audit"],
+  "quality_commands": ["npm test", "npm run lint", "npm run build", "npm run typecheck"]
+}

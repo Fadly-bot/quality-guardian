@@ -1,0 +1,9 @@
+{
+  "name": "Python",
+  "version": "1.0",
+  "detect": ["pyproject.toml", "requirements.txt", "setup.py"],
+  "package_managers": ["pip"],
+  "required_scanners": ["semgrep", "gitleaks", "trivy", "osv"],
+  "optional_scanners": ["pip-audit"],
+  "quality_commands": ["pytest", "ruff check .", "mypy ."]
+}

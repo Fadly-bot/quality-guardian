@@ -1,0 +1,9 @@
+{
+  "name": "Generic",
+  "version": "1.0",
+  "detect": [],
+  "package_managers": [],
+  "required_scanners": ["semgrep", "gitleaks", "trivy", "osv"],
+  "optional_scanners": [],
+  "quality_commands": []
+}
