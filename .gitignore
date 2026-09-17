@@ -22,3 +22,15 @@ venv/
 
 # Local Guardian data
 .guardian/
+
+# Secrets and sensitive files
+.env
+.env.*
+*.env
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_dsa
+credentials
