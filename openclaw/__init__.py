@@ -101,6 +101,19 @@ from .security_gate import (
     is_tool_available,
     find_secrets,
 )
+from .deployment_gate import (
+    DEPLOYMENT_ROLE,
+    VALID_STATUSES as DEPLOYMENT_VALID_STATUSES,
+    VALID_DECISIONS as DEPLOYMENT_VALID_DECISIONS,
+    DeploymentGateError,
+    ValidationError as DeploymentValidationError,
+    DeploymentGateSeparationError,
+    PreflightCheck,
+    RollbackPlan,
+    DeploymentGateResult,
+    DeploymentGate,
+    DeploymentGateClient,
+)
 
 __all__ = [
     "ABORTED",
@@ -187,4 +200,15 @@ __all__ = [
     "SecurityGateClient",
     "is_tool_available",
     "find_secrets",
+    "DEPLOYMENT_ROLE",
+    "DEPLOYMENT_VALID_STATUSES",
+    "DEPLOYMENT_VALID_DECISIONS",
+    "DeploymentGateError",
+    "DeploymentValidationError",
+    "DeploymentGateSeparationError",
+    "PreflightCheck",
+    "RollbackPlan",
+    "DeploymentGateResult",
+    "DeploymentGate",
+    "DeploymentGateClient",
 ]
