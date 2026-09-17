@@ -2,6 +2,7 @@ import pytest
 
 from openclaw.orchestrator import OpenClaw, RoutingError
 from openclaw.security_gate import (
+    ScannerRun,
     SecurityCheck,
     SecurityGate,
     SecurityGateClient,
@@ -236,3 +237,146 @@ def test_categories_complete():
         "repository", "dependency", "application", "infrastructure",
         "ai_agent", "governance",
     }
+
+
+# --- controlled environment scanner runner wiring ---------------------------
+
+
+def _clean_run(tool: str, root) -> ScannerRun:
+    return ScannerRun(tool=tool, target=str(root), found=0)
+
+
+def _finding_run(tool: str, root) -> ScannerRun:
+    return ScannerRun(tool=tool, target=str(root), found=2,
+                      findings=["tool/a.py:3 leak", "tool/b.py:9 leak"])
+
+
+def _error_run(tool: str, root) -> ScannerRun:
+    return ScannerRun(tool=tool, target=str(root), found=-1,
+                      error="scan crashed")
+
+
+def test_default_no_runner_keeps_external_scanners_not_scanned():
+    gate = SecurityGate()
+    result = gate.run(".")
+    not_scanned = {c.check_id for c in result.not_scanned()}
+    assert {"repo.gitleaks", "app.semgrep", "dep.pip-audit",
+            "dep.osv-scanner", "repo.branch_protection"} <= not_scanned
+
+
+def test_runner_clean_scans_pass():
+    gate = SecurityGate(
+        tool_available=lambda tool: True,
+        scanner_runner=_clean_run,
+    )
+    result = gate.run(".")
+    ids = {c.check_id: c.status for c in result.checks}
+    assert ids["repo.gitleaks"] == "PASS"
+    assert ids["app.semgrep"] == "PASS"
+    assert ids["dep.pip-audit"] == "PASS"
+    assert ids["dep.osv-scanner"] == "PASS"
+
+
+def test_runner_findings_fail():
+    gate = SecurityGate(
+        tool_available=lambda tool: True,
+        scanner_runner=_finding_run,
+    )
+    result = gate.run(".")
+    ids = {c.check_id: c.status for c in result.checks}
+    assert ids["repo.gitleaks"] == "FAIL"
+    assert ids["app.semgrep"] == "FAIL"
+    assert result.decision == "FAIL"
+    check = next(c for c in result.checks if c.check_id == "repo.gitleaks")
+    assert check.evidence == ["tool/a.py:3 leak", "tool/b.py:9 leak"]
+
+
+def test_runner_error_is_error():
+    gate = SecurityGate(
+        tool_available=lambda tool: True,
+        scanner_runner=_error_run,
+    )
+    result = gate.run(".")
+    ids = {c.check_id: c.status for c in result.checks}
+    assert ids["dep.osv-scanner"] == "ERROR"
+    assert result.decision == "ERROR"
+
+
+def test_runner_with_missing_tool_stays_not_scanned():
+    gate = SecurityGate(
+        tool_available=lambda tool: False,
+        scanner_runner=_clean_run,
+    )
+    result = gate.run(".")
+    ids = {c.check_id: c.status for c in result.checks}
+    assert ids["repo.gitleaks"] == "NOT_SCANNED"
+    assert ids["app.semgrep"] == "NOT_SCANNED"
+
+
+def test_runner_pass_validation_still_blocks_not_scanned():
+    # Even with a runner, a repo.branch_protection without host evidence is
+    # NOT_SCANNED, so decision can never become PASS by skipping a check.
+    gate = SecurityGate(
+        tool_available=lambda tool: True,
+        scanner_runner=_clean_run,
+    )
+    assert gate.run(".").decision in {"NOT_SCANNED", "FAIL", "ERROR"}
+
+
+def test_branch_protection_host_evidence_verified():
+    gate = SecurityGate(
+        scanner_runner=_clean_run,
+        tool_available=lambda tool: True,
+        host_evidence={"branch_protection": {"main": "2026-09-17"}},
+    )
+    result = gate.run(".")
+    bp = next(c for c in result.checks if c.check_id == "repo.branch_protection")
+    assert bp.status == "PASS"
+    assert "host-verified" in bp.detail
+
+
+def test_branch_protection_without_evidence_not_scanned():
+    gate = SecurityGate(scanner_runner=_clean_run, tool_available=lambda tool: True)
+    bp = next(c for c in gate.run(".").checks if c.check_id == "repo.branch_protection")
+    assert bp.status == "NOT_SCANNED"
+
+
+def test_full_provisioned_sandbox_reaches_pass(tmp_path):
+    # Controlled environment with all scanners wired, host evidence present,
+    # and a fixture repository that passes every built-in check.
+    import json
+    import subprocess
+    from pathlib import Path
+
+    repo = Path(tmp_path)
+    (repo / ".gitignore").write_text(".env\n.env.*\n*.env\n*.pem\n*.key\nid_rsa\nid_dsa\n")
+    (repo / "app.py").write_text("print('ok')\n")
+    (repo / "openclaw").mkdir()
+    (repo / "openclaw" / "orchestrator.py").write_text(
+        "_assert_actor\napprover != HUMAN_ROLE\n"
+    )
+    (repo / "openclaw" / "agent_registry.json").write_text(json.dumps({
+        "agents": {
+            "openclaw": {"forbidden_actions": ["grant_approval"]},
+            "deployment_check": {
+                "permissions": ["deployment_after_approval"],
+                "forbidden_actions": ["deploy_without_approval"],
+            },
+            "quality_guardian": {"forbidden_actions": ["deploy"]},
+        }
+    }))
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=False)
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=repo, check=False)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=False)
+    subprocess.run(["git", "add", "."], cwd=repo, check=False)
+    subprocess.run(["git", "commit", "-q", "-m", "fixture"], cwd=repo, check=False)
+    gate = SecurityGate(
+        scanner_runner=_clean_run,
+        tool_available=lambda tool: True,
+        host_evidence={"branch_protection": {"main": "2026-09-17"}},
+    )
+    result = gate.run(repo)
+    block = [c.check_id for c in result.checks
+             if c.status in {"FAIL", "ERROR", "NOT_SCANNED", "NEEDS_REVIEW"}]
+    assert not block
+    assert result.decision == "PASS"

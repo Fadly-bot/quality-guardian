@@ -137,6 +137,23 @@ class SecurityCheck:
     evidence: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class ScannerRun:
+    """Result of an actually executed external scanner scan.
+
+    A controlled environment (sandbox / provisioned CI / production) wires a
+    real ``scanner_runner`` that invokes the external tool and returns its real
+    result. ``found == -1`` signals a scan error; ``error`` carries the detail.
+    When no runner is wired, external scanner checks remain NOT_SCANNED.
+    """
+
+    tool: str
+    target: str
+    found: int
+    findings: list[str] = field(default_factory=list)
+    error: str = ""
+
+
 @dataclass
 class SecurityGateResult:
     """Validated Security Gate decision over a set of checks."""
@@ -284,8 +301,12 @@ class SecurityGate:
     def __init__(
         self,
         tool_available: Callable[[str], bool] = is_tool_available,
+        scanner_runner: Callable[[str, Path], ScannerRun] | None = None,
+        host_evidence: Mapping[str, object] | None = None,
     ) -> None:
         self._tool_available = tool_available
+        self._scanner_runner = scanner_runner
+        self._host_evidence = host_evidence or {}
 
     # --- private evidence helpers ------------------------------------------
 
@@ -305,6 +326,55 @@ class SecurityGate:
 
     def _scan_scope(self, root: Path) -> list[str]:
         return [rel.as_posix() for rel, _ in _iter_scan_files(root)]
+
+    def _external_scan(
+        self,
+        check_id: str,
+        category: str,
+        description: str,
+        root: Path,
+        tool: str,
+        scope: str = "",
+    ) -> SecurityCheck:
+        """Run one external scanner through the wired runner (fail-closed).
+
+        No runner or missing tool -> NOT_SCANNED (never fabricated). A real
+        runner result yields ERROR / FAIL / PASS from actual scan output.
+        """
+        if self._scanner_runner is None or not self._tool_available(tool):
+            return SecurityCheck(
+                check_id=check_id,
+                category=category,
+                description=description,
+                status="NOT_SCANNED",
+                detail=f"{tool} scan not executed in this environment"
+                       f"{'' if scope else ''}",
+                evidence=[f"tool_available={self._tool_available(tool)}",
+                          f"runner_wired={self._scanner_runner is not None}"],
+            )
+        try:
+            run = self._scanner_runner(tool, root)
+        except Exception as exc:  # pragma: no cover - runner contract breach
+            run = ScannerRun(tool=tool, target=str(root), found=-1, error=str(exc))
+        if run.error or run.found < 0:
+            return SecurityCheck(
+                check_id=check_id, category=category, description=description,
+                status="ERROR",
+                detail=f"{tool} scan error: {run.error or 'unknown'}",
+            )
+        if run.found > 0:
+            return SecurityCheck(
+                check_id=check_id, category=category, description=description,
+                status="FAIL",
+                detail=f"{tool} found {run.found} finding(s)",
+                evidence=run.findings[:20],
+            )
+        return SecurityCheck(
+            check_id=check_id, category=category, description=description,
+            status="PASS",
+            detail=f"{tool} scan clean over {run.target or scope or str(root)}",
+            evidence=[f"{tool} findings=0" if not scope else f"{tool} findings=0 scope={scope}"],
+        )
 
     # --- checks ------------------------------------------------------------
 
@@ -337,26 +407,10 @@ class SecurityGate:
                 )
             )
 
-        if self._tool_available("gitleaks"):
-            checks.append(
-                SecurityCheck(
-                    check_id="repo.gitleaks",
-                    category="repository",
-                    description="gitleaks secret detection",
-                    status="NOT_SCANNED",
-                    detail="tool present but not auto-executed in gate",
-                )
-            )
-        else:
-            checks.append(
-                SecurityCheck(
-                    check_id="repo.gitleaks",
-                    category="repository",
-                    description="gitleaks secret detection",
-                    status="NOT_SCANNED",
-                    detail="gitleaks not available in environment",
-                )
-            )
+        checks.append(self._external_scan(
+            "repo.gitleaks", "repository", "gitleaks secret detection",
+            root, "gitleaks", scope="working tree and Git history",
+        ))
 
         gitignore = root / ".gitignore"
         if gitignore.is_file():
@@ -422,17 +476,37 @@ class SecurityGate:
             )
         )
 
-        checks.append(
-            SecurityCheck(
-                check_id="repo.branch_protection",
-                category="repository",
-                description="Branch protection strategy verified",
-                status="NOT_SCANNED",
-                detail="branch protection policy requires repository-host API; "
-                       "not verifiable locally",
-                evidence=[f"branch={self._read_git(root, 'rev-parse', '--abbrev-ref', 'HEAD') or 'UNKNOWN'}"],
+        branch = self._read_git(root, "rev-parse", "--abbrev-ref", "HEAD") or "UNKNOWN"
+        protection = self._host_evidence.get("branch_protection")
+        if isinstance(protection, Mapping) and protection.get(branch):
+            checks.append(
+                SecurityCheck(
+                    check_id="repo.branch_protection",
+                    category="repository",
+                    description="Branch protection strategy verified",
+                    status="PASS",
+                    detail=(
+                        f"host-verified protection for {branch!r} "
+                        f"(evidence from controlled host/profile)"
+                    ),
+                    evidence=[
+                        f"branch={branch}",
+                        f"verified_at={protection.get(branch)}",
+                    ],
+                )
             )
-        )
+        else:
+            checks.append(
+                SecurityCheck(
+                    check_id="repo.branch_protection",
+                    category="repository",
+                    description="Branch protection strategy verified",
+                    status="NOT_SCANNED",
+                    detail="branch protection policy requires repository-host API; "
+                           "not verifiable in this environment",
+                    evidence=[f"branch={branch}"],
+                )
+            )
         return checks
 
     def _check_dependency(self, root: Path) -> list[SecurityCheck]:
@@ -474,20 +548,12 @@ class SecurityGate:
             )
         )
 
-        for scanner, tool in (("pip-audit", "pip-audit"), ("osv-scanner", "osv-scanner")):
-            status = "NOT_SCANNED"
-            detail = f"{tool} required for known-vulnerability audit"
-            if self._tool_available(tool):
-                detail = f"{tool} available but requires configured invocation"
-            checks.append(
-                SecurityCheck(
-                    check_id=f"dep.{scanner}",
-                    category="dependency",
-                    description=f"{scanner} known-vulnerability scan",
-                    status=status,
-                    detail=detail,
-                )
-            )
+        for scanner in ("pip-audit", "osv-scanner"):
+            checks.append(self._external_scan(
+                f"dep.{scanner}", "dependency",
+                f"{scanner} known-vulnerability scan",
+                root, scanner, scope="dependency manifests",
+            ))
         return checks
 
     def _check_application(self, root: Path) -> list[SecurityCheck]:
@@ -519,17 +585,10 @@ class SecurityGate:
             )
         )
 
-        checks.append(
-            SecurityCheck(
-                check_id="app.semgrep",
-                category="application",
-                description="semgrep static analysis",
-                status="NOT_SCANNED",
-                detail="semgrep not available in environment"
-                       if not self._tool_available("semgrep")
-                       else "semgrep available but requires configured invocation",
-            )
-        )
+        checks.append(self._external_scan(
+            "app.semgrep", "application", "semgrep static analysis",
+            root, "semgrep", scope="source tree",
+        ))
         return checks
 
     def _check_infrastructure(self, root: Path) -> list[SecurityCheck]:
