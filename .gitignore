@@ -34,3 +34,8 @@ venv/
 id_rsa
 id_dsa
 credentials
+
+# Workspace planning files (not Development F project artifacts)
+1-8.md
+12.md
+hasil.md
