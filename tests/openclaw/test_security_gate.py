@@ -105,6 +105,42 @@ def test_planted_secret_causes_fail_with_evidence(tmp_path):
     assert result.decision == "FAIL"
 
 
+def test_user_session_transcripts_excluded_from_secret_scan(tmp_path):
+    # Regression: user-owned session transcripts quoting the *test fixture*
+    # string must not be scanned as Development F evidence; a real planted
+    # secret in a project file is still detected.
+    (tmp_path / "session-ses_123.md").write_text(
+        "transcript quoting fixture: api_key = 'sk_live_%s'" % ("C" * 20)
+    )
+    (tmp_path / "session-ses_456.md").write_text("ghp_%s" % ("A" * 40))
+    (tmp_path / "lanjut.md").write_text("password = '%s'" % ("D" * 20))
+    (tmp_path / "code.py").write_text("def f():\n    return 1\n")
+    (tmp_path / ".gitignore").write_text(".env\n*.env\n*.pem\n*.key\nid_rsa\n")
+    gate = SecurityGate()
+    result = gate.run(tmp_path)
+    scan = next(c for c in result.checks if c.check_id == "repo.secret_scan")
+    assert scan.status == "PASS"
+    scanned = [e for e in scan.evidence if e.startswith("scanned_files=")]
+    # code.py + .gitignore are in scope; all user artifacts are excluded.
+    assert scanned == ["scanned_files=2"]
+    # The aggregate decision is governed by unrelated checks (e.g. registry
+    # presence); NOT_SCANNED-vs-FAIL decision behavior is pinned by
+    # test_unavailable_external_scanners_are_not_scanned.
+
+
+def test_planted_secret_in_project_file_still_fails_despite_exclusions(tmp_path):
+    (tmp_path / "session-ses_123.md").write_text("harmless transcript")
+    (tmp_path / "lanjut.md").write_text("harmless continuation prompt")
+    (tmp_path / "config.py").write_text("api_key = 'sk_live_%s'" % ("C" * 20))
+    (tmp_path / ".gitignore").write_text(".env\n*.env\n*.pem\n*.key\nid_rsa\n")
+    gate = SecurityGate()
+    result = gate.run(tmp_path)
+    scan = next(c for c in result.checks if c.check_id == "repo.secret_scan")
+    assert scan.status == "FAIL"
+    assert any("config.py" in e for e in scan.evidence)
+    assert result.decision == "FAIL"
+
+
 def test_unavailable_external_scanners_are_not_scanned():
     gate = SecurityGate(tool_available=lambda tool: False)
     result = gate.run(".")

@@ -103,8 +103,18 @@ _CONFIG_SUFFIXES = (".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", 
 _SOURCE_FILES = (".py", ".js", ".ts", ".sh")
 
 # User-owned files that are not part of Development F (never scanned as
-# Development F evidence).
-_USER_FILES = frozenset({"1-8.md", "12.md", "hasil.md"})
+# Development F evidence). Exact names plus glob patterns for session
+# transcripts and continuation prompts, which are user workspace artifacts,
+# not project files. Real secrets in project files are still detected.
+_USER_FILES = frozenset({"1-8.md", "12.md", "hasil.md", "lanjut.md"})
+_USER_FILE_PATTERNS = ("session-*.md",)
+
+
+def _is_user_file(rel: Path) -> bool:
+    """True for user-owned workspace artifacts excluded from gate evidence."""
+    if rel.as_posix() in _USER_FILES:
+        return True
+    return any(fnmatch.fnmatch(rel.name, pattern) for pattern in _USER_FILE_PATTERNS)
 
 
 # --- errors ---------------------------------------------------------------
@@ -231,7 +241,7 @@ def _iter_scan_files(project_root: Path) -> list[tuple[Path, Path]]:
                 capture_output=True, text=True, timeout=30, check=False,
             ).stdout.split("\0")
             for rel in tracked:
-                if rel:
+                if rel and not _is_user_file(Path(rel)):
                     files.append((Path(rel), project_root / rel))
             untracked = subprocess.run(
                 ["git", "-C", str(project_root), "ls-files", "--others",
@@ -239,7 +249,7 @@ def _iter_scan_files(project_root: Path) -> list[tuple[Path, Path]]:
                 capture_output=True, text=True, timeout=30, check=False,
             ).stdout.split("\0")
             for rel in untracked:
-                if rel and rel not in _USER_FILES:
+                if rel and not _is_user_file(Path(rel)):
                     files.append((Path(rel), project_root / rel))
         except OSError:  # pragma: no cover
             files = []
@@ -248,7 +258,7 @@ def _iter_scan_files(project_root: Path) -> list[tuple[Path, Path]]:
             rel = path.relative_to(project_root)
             if any(part in _SCAN_EXCLUDES for part in path.parts):
                 continue
-            if path.is_file() and rel.as_posix() not in _USER_FILES:
+            if path.is_file() and not _is_user_file(rel):
                 files.append((rel, path))
     return sorted(files, key=lambda pair: pair[0].as_posix())
 
