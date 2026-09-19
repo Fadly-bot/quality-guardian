@@ -107,7 +107,7 @@ _SOURCE_FILES = (".py", ".js", ".ts", ".sh")
 # transcripts and continuation prompts, which are user workspace artifacts,
 # not project files. Real secrets in project files are still detected.
 _USER_FILES = frozenset({"1-8.md", "12.md", "hasil.md", "lanjut.md"})
-_USER_FILE_PATTERNS = ("session-*.md",)
+_USER_FILE_PATTERNS = ("session-*.md", "hasil*.md")
 
 
 def _is_user_file(rel: Path) -> bool:
